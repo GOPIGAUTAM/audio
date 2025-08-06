@@ -1,0 +1,358 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Human Heart Simulation (VR Compatible)</title>
+    <style>
+        body { margin: 0; }
+        canvas { display: block; }
+        .label {
+            color: white;
+            background-color: rgba(0, 0, 0, 0.75);
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: Arial, sans-serif;
+            font-size: 12px;
+            pointer-events: none;
+        }
+        .controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            z-index: 10;
+        }
+        .controls button {
+            cursor: pointer;
+            margin: 5px 0;
+        }
+        .status {
+            margin-top: 5px;
+            font-size: 12px;
+            max-height: 100px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <button id="toggleSimBtn">Play Simulation</button>
+        <button id="enterVRBtn" style="display: none;">Enter VR</button>
+        <div class="status" id="status">Initializing...</div>
+    </div>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+        import { VRButton } from 'three/addons/webxr/VRButton.js';
+
+        // Set up scene, camera, and renderer
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.xr.enabled = true; // Enable WebXR
+        document.body.appendChild(renderer.domElement);
+        document.body.appendChild(VRButton.createButton(renderer)); // Add VR button
+
+        // Set up CSS2DRenderer for labels
+        const labelRenderer = new CSS2DRenderer();
+        labelRenderer.setSize(window.innerWidth, window.innerHeight);
+        labelRenderer.domElement.style.position = 'absolute';
+        labelRenderer.domElement.style.top = '0px';
+        document.body.appendChild(labelRenderer.domElement);
+
+        // Add audio
+        const listener = new THREE.AudioListener();
+        camera.add(listener);
+        let sound = new THREE.Audio(listener);
+        const audioLoader = new THREE.AudioLoader();
+        const defaultAudioUrl = 'https://raw.githubusercontent.com/GOPIGAUTAM/audio/main/ElevenLabs_Text_to_Speech_audio%20(7).mp3';
+        const fallbackAudioUrl = 'https://cdn.pixabay.com/download/audio/2022/03/15/audio_5b2b4a4b1c.mp3';
+        const statusDiv = document.getElementById('status');
+        let isSimulationRunning = false;
+
+        // Function to update status
+        function updateStatus(message) {
+            statusDiv.innerHTML += `<div>${new Date().toLocaleTimeString()}: ${message}</div>`;
+            statusDiv.scrollTop = statusDiv.scrollHeight;
+        }
+
+        // Function to load audio with retry
+        function loadAudio(url = defaultAudioUrl, retryCount = 0) {
+            const maxRetries = 2;
+            updateStatus(`Loading audio from ${url}...`);
+            console.log('Attempting to load audio from:', url);
+            if (sound.isPlaying) sound.stop();
+            audioLoader.load(
+                url,
+                (buffer) => {
+                    sound = new THREE.Audio(listener);
+                    sound.setBuffer(buffer);
+                    sound.setLoop(true); // Loop to cover full simulation
+                    sound.setVolume(0.5);
+                    updateStatus(`Audio loaded: ${url}`);
+                    console.log('Audio loaded successfully from:', url);
+                    if (isSimulationRunning && sound.hasPlaybackControl) sound.play();
+                },
+                (xhr) => {
+                    updateStatus(`Audio loading: ${Math.round(xhr.loaded / xhr.total * 100)}%`);
+                },
+                (error) => {
+                    console.error('Error loading audio:', error);
+                    if (retryCount < maxRetries) {
+                        updateStatus(`Retrying audio load (${retryCount + 1}/${maxRetries})...`);
+                        setTimeout(() => loadAudio(url, retryCount + 1), 1000);
+                    } else {
+                        updateStatus(`Failed to load ${url}. Trying fallback...`);
+                        audioLoader.load(
+                            fallbackAudioUrl,
+                            (buffer) => {
+                                sound = new THREE.Audio(listener);
+                                sound.setBuffer(buffer);
+                                sound.setLoop(true);
+                                sound.setVolume(0.5);
+                                updateStatus('Using fallback audio');
+                                console.log('Fallback audio loaded from:', fallbackAudioUrl);
+                                if (isSimulationRunning && sound.hasPlaybackControl) sound.play();
+                            },
+                            () => {},
+                            (error) => {
+                                console.error('Error loading fallback audio:', error);
+                                updateStatus('Audio failed. Simulation continues without sound.');
+                            }
+                        );
+                    }
+                }
+            );
+        }
+
+        // Load default audio
+        loadAudio();
+
+        // Add lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+        directionalLight.position.set(0, 1, 1);
+        scene.add(directionalLight);
+
+        // Add orbit controls
+        const controls = new OrbitControls(camera, labelRenderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // Particle system for blood flow
+        const particles = [];
+        const particleCount = 100;
+        const particleGeometry = new THREE.SphereGeometry(0.02, 8, 8);
+        const particleMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+
+        function createBloodParticle() {
+            const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+            particle.position.set(0, 0, 0);
+            particle.velocity = new THREE.Vector3(
+                (Math.random() - 0.5) * 0.1,
+                (Math.random() - 0.5) * 0.1,
+                (Math.random() - 0.5) * 0.1
+            );
+            particle.lifetime = Math.random() * 2 + 1;
+            particle.age = 0;
+            scene.add(particle);
+            particles.push(particle);
+        }
+
+        function updateBloodParticles(delta) {
+            particles.forEach((particle, index) => {
+                particle.age += delta;
+                if (particle.age > particle.lifetime) {
+                    scene.remove(particle);
+                    particles.splice(index, 1);
+                } else {
+                    particle.position.add(particle.velocity);
+                    particle.material.opacity = 1 - particle.age / particle.lifetime;
+                }
+            });
+        }
+
+        // Function to create a label
+        function createLabel(text, position) {
+            const div = document.createElement('div');
+            div.className = 'label';
+            div.textContent = text;
+            const label = new CSS2DObject(div);
+            label.position.copy(position);
+            return label;
+        }
+
+        // Load GLTF model or fallback
+        const loader = new GLTFLoader();
+        const modelUrl = 'https://raw.githubusercontent.com/GOPIGAUTAM/gltf-file-/main/Huamn_heart_pumping_0803143811_texture.glb';
+        let mixer;
+        let model;
+
+        function createFallbackModel() {
+            const geometry = new THREE.SphereGeometry(1, 32, 32);
+            const material = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+            model = new THREE.Mesh(geometry, material);
+            scene.add(model);
+            updateStatus('Using fallback sphere model');
+            camera.position.set(0, 0, 5);
+            const heartParts = [
+                { name: 'Left Ventricle', position: new THREE.Vector3(0.5, -0.5, 0) },
+                { name: 'Right Ventricle', position: new THREE.Vector3(-0.5, -0.5, 0) },
+                { name: 'Left Atrium', position: new THREE.Vector3(0.5, 0.5, 0) },
+                { name: 'Right Atrium', position: new THREE.Vector3(-0.5, 0.5, 0) },
+                { name: 'Aorta', position: new THREE.Vector3(0, 1, 0) },
+                { name: 'Pulmonary Artery', position: new THREE.Vector3(0, 0.8, 0.5) }
+            ];
+            heartParts.forEach(part => {
+                const label = createLabel(part.name, part.position);
+                model.add(label);
+            });
+        }
+
+        loader.load(
+            modelUrl,
+            (gltf) => {
+                model = gltf.scene;
+                scene.add(model);
+                const box = new THREE.Box3().setFromObject(model);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scale = 5 / maxDim;
+                model.scale.set(scale, scale, scale);
+                model.position.sub(center.multiplyScalar(scale));
+                camera.position.set(0, 0, 5);
+                const heartParts = [
+                    { name: 'Left Ventricle', position: new THREE.Vector3(0.5, -0.5, 0) },
+                    { name: 'Right Ventricle', position: new THREE.Vector3(-0.5, -0.5, 0) },
+                    { name: 'Left Atrium', position: new THREE.Vector3(0.5, 0.5, 0) },
+                    { name: 'Right Atrium', position: new THREE.Vector3(-0.5, 0.5, 0) },
+                    { name: 'Aorta', position: new THREE.Vector3(0, 1, 0) },
+                    { name: 'Pulmonary Artery', position: new THREE.Vector3(0, 0.8, 0.5) }
+                ];
+                heartParts.forEach(part => {
+                    const label = createLabel(part.name, part.position);
+                    model.add(label);
+                });
+                if (gltf.animations && gltf.animations.length) {
+                    mixer = new THREE.AnimationMixer(model);
+                    gltf.animations.forEach((clip) => {
+                        mixer.clipAction(clip).play();
+                    });
+                }
+                updateStatus('Model loaded successfully');
+            },
+            (xhr) => {
+                updateStatus(`Model loading: ${Math.round(xhr.loaded / xhr.total * 100)}%`);
+            },
+            (error) => {
+                console.error('Error loading GLTF model:', error);
+                updateStatus('Failed to load model. Using fallback.');
+                createFallbackModel();
+            }
+        );
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Toggle simulation
+        document.getElementById('toggleSimBtn').addEventListener('click', () => {
+            isSimulationRunning = !isSimulationRunning;
+            console.log('Toggle Simulation button clicked:', isSimulationRunning ? 'Started' : 'Paused');
+            updateStatus(isSimulationRunning ? 'Simulation started' : 'Simulation paused');
+            document.getElementById('toggleSimBtn').textContent = isSimulationRunning ? 'Pause Simulation' : 'Play Simulation';
+            if (isSimulationRunning && !sound.isPlaying && sound.hasPlaybackControl) {
+                sound.play();
+                updateStatus('Playing heartbeat audio');
+            } else if (!isSimulationRunning && sound.isPlaying) {
+                sound.pause();
+                updateStatus('Audio paused');
+            }
+        });
+
+        // Animation loop
+        const clock = new THREE.Clock();
+        let pulseTimer = 0;
+        const pulseInterval = 0.8;
+
+        renderer.setAnimationLoop(() => {
+            if (!isSimulationRunning) {
+                renderer.render(scene, camera);
+                labelRenderer.render(scene, camera);
+                return;
+            }
+            const delta = clock.getDelta();
+            controls.update();
+            if (mixer) mixer.update(delta);
+            pulseTimer += delta;
+            if (pulseTimer >= pulseInterval) {
+                for (let i = 0; i < 5; i++) createBloodParticle();
+                pulseTimer = 0;
+            }
+            updateBloodParticles(delta);
+            renderer.render(scene, camera);
+            labelRenderer.render(scene, camera);
+        });
+    </script>
+</body>
+</html>
